@@ -1,6 +1,13 @@
 package com.example.demo;
 
-import com.example.demo.utils.UidGenerator;
+import com.baidu.fsg.uid.UidGenerator;
+import com.baidu.fsg.uid.impl.DefaultUidGenerator;
+import com.baidu.fsg.uid.worker.DisposableWorkerIdAssigner;
+import com.baidu.fsg.uid.worker.WorkerIdAssigner;
+import com.baidu.fsg.uid.worker.dao.WorkerNodeDAO;
+import com.baidu.fsg.uid.worker.entity.WorkerNodeEntity;
+import com.example.demo.mapper.DelegateMapper;
+import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.stereotype.Component;
 
@@ -10,7 +17,9 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.stream.IntStream;
@@ -21,6 +30,15 @@ public class Test {
     @Resource
     private DataSource dataSource;
 
+    @Resource
+    private WorkerIdAssigner workerIdAssigner;
+
+    @Resource
+    private DelegateMapper delegateMapper;
+
+    @Resource
+    private UidGenerator uidGenerator;
+
     @PostConstruct
     public void test() throws Exception {
         int concurrency = 100;
@@ -30,18 +48,17 @@ public class Test {
         CountDownLatch wg = new CountDownLatch(concurrency);
         IDGenerator[] generators = new IDGenerator[concurrency];
         CountDownLatch tmpwg = new CountDownLatch(concurrency);
-        final UidGenerator uidGenerator = new UidGenerator(30, 20, 13);
-        uidGenerator.setWorkerId(1);
-        for (int i = 0; i < concurrency; i++) {
+        for (int i =0 ;i < concurrency; i++) {
             final int threadID = i;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     try {
                         generators[threadID] = new IDGenerator(uidGenerator, repeat);
-                    } catch (Exception e) {
+                    }catch (Exception e) {
                         System.err.println(e);
-                    } finally {
+                    }
+                    finally {
                         tmpwg.countDown();
                     }
                 }
@@ -54,14 +71,11 @@ public class Test {
             new Thread(new Runnable() {
                 PrimaryIDCache idCache = new PrimaryIDCache();
                 IDGenerator idGenerator = generators[threadID];
-
                 @Override
                 public void run() {
                     System.out.println("thread " + threadID + " start");
                     try {
-                        System.out.println(
-                            "thread " + threadID + " done" + ", repeat=" + repeat + ",insert="
-                                + mixSelectAfterInsertTest(repeat, idCache, idGenerator));
+                        System.out.println("thread " + threadID + " done" + ", repeat=" + repeat + ",insert=" + mixSelectAfterInsertTest(repeat, idCache, idGenerator));
                     } catch (Exception e) {
                         System.err.println(e);
                     } finally {
@@ -75,86 +89,78 @@ public class Test {
         System.out.println("All done, use " + (System.currentTimeMillis() - start) + "ms");
     }
 
-    private static final String insertSQL =
-        "insert into txn_history(txn_id, user_id, txn_type, txn_state, txn_order_amount, txn_order_currency, txn_charge_amount, "
-            +
-            "txn_charge_currency, txn_exchange_amount, txn_exchange_currency, txn_promo_amount, txn_promo_currency, "
-            +
-            "disabled, version, order_id, order_state, order_error_code, order_type, order_created_at, order_updated_at, order_version, order_items, "
-            +
-            "payment_id, payment_created_at, payment_updated_at, payment_paid_at, payment_version, payment_state, payment_error_code, comments, sub_payments, "
-            +
-            "cb_amount, cb_state, cb_release_date, cb_created_at, cb_updated_at, cb_version, merchant_id, merchant_name, merchant_cat, merchant_sub_cat, created_at, updated_at,"
-            +
-            "store_id, store_name, pos_id, biller_id, logo_url, peer_id, peer_name, device_id, extra_info) "
-            +
-            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now(), ?, ?, ?, now(), now(), now(), ?, ?, ?, ?, ?, "
-            +
+    private static final String insertSQL = "insert into txn_history(txn_id, user_id, txn_type, txn_state, txn_order_amount, txn_order_currency, txn_charge_amount, " +
+            "txn_charge_currency, txn_exchange_amount, txn_exchange_currency, txn_promo_amount, txn_promo_currency, " +
+            "disabled, version, order_id, order_state, order_error_code, order_type, order_created_at, order_updated_at, order_version, order_items, " +
+            "payment_id, payment_created_at, payment_updated_at, payment_paid_at, payment_version, payment_state, payment_error_code, comments, sub_payments, " +
+            "cb_amount, cb_state, cb_release_date, cb_created_at, cb_updated_at, cb_version, merchant_id, merchant_name, merchant_cat, merchant_sub_cat, created_at, updated_at," +
+            "store_id, store_name, pos_id, biller_id, logo_url, peer_id, peer_name, device_id, extra_info) " +
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now(), ?, ?, ?, now(), now(), now(), ?, ?, ?, ?, ?, " +
             "?, ?, now(), now(), now(), ?, ?, ?, ?, ?, now(), now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     private static final String selectSQL = "select * from txn_history where user_id = ? and order_id = ?";
     private static final String updateSQL = "update  txn_history set "
-        + "txn_id=?, "
-        + "user_id=?,"
-        + "txn_type=?, "
-        + "txn_state=?, "
-        + "txn_order_amount=?, "
-        + "txn_order_currency=?, "
-        + "txn_charge_amount=?, " +
-        "txn_charge_currency=?, "
-        + "txn_exchange_amount=?, "
-        + "txn_exchange_currency=?, "
-        + "txn_promo_amount=?, "
-        + "txn_promo_currency=?, " +
-        "disabled=?, "
-        + "version=?, "
-        + "order_id=?,"
-        + " order_state=?, "
-        + "order_error_code=?, "
-        + "order_type=?, "
-        + "order_created_at=now(),"
-        + " order_updated_at=now(), "
-        + "order_version=?, "
-        + "order_items=?, " +
-        "payment_id=?, "
-        + "payment_created_at=now(), "
-        + "payment_updated_at=now(), "
-        + "payment_paid_at=now(), "
-        + "payment_version=?, "
-        + "payment_state=?, "
-        + "payment_error_code=?, "
-        + "comments=?, "
-        + "sub_payments=?, " +
-        "cb_amount=?, "
-        + "cb_state=?, "
-        + "cb_release_date=now(), "
-        + "cb_created_at=now(), "
-        + "cb_updated_at=now(), "
-        + "cb_version=?,"
-        + " merchant_id=?, "
-        + "merchant_name=?, "
-        + "merchant_cat=?, "
-        + "merchant_sub_cat=?, "
-        + "created_at=now(), "
-        + "updated_at=now()," +
-        "store_id=?, "
-        + "store_name=?, "
-        + "pos_id=?, "
-        + "biller_id=?, "
-        + "logo_url=?, "
-        + "peer_id=?, peer_name=?, device_id=?, "
-        + "extra_info=? where user_id =? and order_id =? ";
+            + "txn_id=?, "
+            + "user_id=?,"
+            + "txn_type=?, "
+            + "txn_state=?, "
+            + "txn_order_amount=?, "
+            + "txn_order_currency=?, "
+            + "txn_charge_amount=?, " +
+            "txn_charge_currency=?, "
+            + "txn_exchange_amount=?, "
+            + "txn_exchange_currency=?, "
+            + "txn_promo_amount=?, "
+            + "txn_promo_currency=?, " +
+            "disabled=?, "
+            + "version=?, "
+            + "order_id=?,"
+            + " order_state=?, "
+            + "order_error_code=?, "
+            + "order_type=?, "
+            + "order_created_at=now(),"
+            + " order_updated_at=now(), "
+            + "order_version=?, "
+            + "order_items=?, " +
+            "payment_id=?, "
+            + "payment_created_at=now(), "
+            + "payment_updated_at=now(), "
+            + "payment_paid_at=now(), "
+            + "payment_version=?, "
+            + "payment_state=?, "
+            + "payment_error_code=?, "
+            + "comments=?, "
+            + "sub_payments=?, " +
+            "cb_amount=?, "
+            + "cb_state=?, "
+            + "cb_release_date=now(), "
+            + "cb_created_at=now(), "
+            + "cb_updated_at=now(), "
+            + "cb_version=?,"
+            + " merchant_id=?, "
+            + "merchant_name=?, "
+            + "merchant_cat=?, "
+            + "merchant_sub_cat=?, "
+            + "created_at=now(), "
+            + "updated_at=now()," +
+            "store_id=?, "
+            + "store_name=?, "
+            + "pos_id=?, "
+            + "biller_id=?, "
+            + "logo_url=?, "
+            + "peer_id=?, peer_name=?, device_id=?, "
+            + "extra_info=? where user_id =? and order_id =? ";
 
-    public int mixSelectAfterInsertTest(int repeat, PrimaryIDCache idCache, IDGenerator idGenerator)
-        throws Exception {
+    public int mixSelectAfterInsertTest(int repeat, PrimaryIDCache idCache, IDGenerator idGenerator) throws Exception {
         int insertCount = 0;
         for (int i = 0; i < repeat; i++) {
             Connection conn = null;
             try {
                 conn = dataSource.getConnection();
-
+                conn.setAutoCommit(false);
                 final PreparedStatement inPstmt = conn.prepareStatement(insertSQL);
                 final PreparedStatement selPstmt = conn.prepareStatement(selectSQL);
                 final PreparedStatement updateStmt = conn.prepareStatement(updateSQL);
+
 
                 PrimaryID pid = getRowIds(i, idCache, idGenerator);
                 // select
@@ -260,13 +266,17 @@ public class Test {
                     idCache.Add(pid.userId, pid.orderId);
                     insertCount++;
                 }
+                conn.commit();
                 resultSet.close();
-            } catch (Exception e) {
+            }
+            catch (Exception e) {
                 System.out.println(e);
-            } finally {
+            }
+            finally {
                 DataSourceUtils.releaseConnection(conn, dataSource);
             }
         }
+
 
 //        try (Connection connection = dataSource.getConnection();
 //             final PreparedStatement inPstmt = connection.prepareStatement(insertSQL);
@@ -286,17 +296,43 @@ public class Test {
         }
     }
 
+    @Bean
+    public UidGenerator uidGenerator() {
+        DefaultUidGenerator r = new DefaultUidGenerator();
+        r.setWorkerIdAssigner(workerIdAssigner);
+        r.setEpochStr("2018-08-01");
+        r.setTimeBits(30);
+        r.setWorkerBits(20);
+        return r;
+    }
 
-    static class PrimaryIDCache {
+    @Bean
+    public WorkerIdAssigner workerIdAssigner() {
+        return new DisposableWorkerIdAssigner();
+    }
 
+    @Bean
+    public WorkerNodeDAO workerNodeDAO() {
+        return new WorkerNodeDAO() {
+            @Override
+            public WorkerNodeEntity getWorkerNodeByHostPort(String host, String port) {
+                return delegateMapper.getWorkerNodeByHostPort(host, port);
+            }
+
+            @Override
+            public void addWorkerNode(WorkerNodeEntity workerNodeEntity) {
+                delegateMapper.addWorkerNode(workerNodeEntity);
+            }
+        };
+    }
+
+    static class PrimaryIDCache{
         ArrayList<Long> userids = new ArrayList<>();
         ArrayList<Long> orderids = new ArrayList<>();
         Random random;
-
         public PrimaryIDCache() {
             random = new Random();
         }
-
         public void Add(long userId, long orderId) {
             userids.add(userId);
             orderids.add(orderId);
@@ -309,19 +345,16 @@ public class Test {
     }
 
     static class IDGenerator {
-
         ArrayList<PrimaryID> primaryIDS = new ArrayList<>();
         ArrayList<Long> txnIds = new ArrayList<>();
         ArrayList<Long> paymentIds = new ArrayList<>();
-
         public IDGenerator(UidGenerator uidGenerator, int repeat) {
             IntStream.range(0, repeat + 10).mapToLong(id -> uidGenerator.getUID()).peek(lid -> {
                 txnIds.add(lid);
             }).peek(lid -> {
-                paymentIds.add(lid + +new Random().nextInt(10000000));
+                paymentIds.add(lid+ + new Random().nextInt(10000000));
             }).forEach(lid -> {
-                PrimaryID pid = new PrimaryID(lid + +new Random().nextInt(10000000),
-                    lid + +new Random().nextInt(10000000));
+                PrimaryID pid = new PrimaryID(lid+ + new Random().nextInt(10000000), lid+ + new Random().nextInt(10000000));
                 primaryIDS.add(pid);
             });
 
@@ -362,7 +395,6 @@ public class Test {
     }
 
     static class PrimaryID {
-
         long userId;
         long orderId;
 
